@@ -1,0 +1,18 @@
+# Conda environment for rnaSPAdes (SPAdes in rna mode).
+#
+# `rnaspades.py` ships inside the `spades` Bioconda package.
+#
+# PLATFORM. SPAdes has native linux-64 and osx-64 builds but NO native
+# osx-arm64. On Apple Silicon conda installs the osx-64 build and macOS runs it
+# under Rosetta 2 transparently — no container needed, at roughly a 20-30%
+# speed penalty. On SLURM (linux-64) it runs natively at full speed.
+name: conotoxin-pipeline-rnaspades
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - spades>=3.15
+  - python=3.11
+  - seqkit>=2.8
+  - pigz
+  - coreutils

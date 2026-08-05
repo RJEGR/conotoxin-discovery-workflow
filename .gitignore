@@ -1,0 +1,62 @@
+# =============================================================================
+# .gitignore  -  keep the repository to code + documentation
+# =============================================================================
+# Everything ignored here is either regenerable from the workflow, too large
+# for git, or licensed such that it cannot be redistributed.
+# =============================================================================
+
+# ---- Snakemake internals ----------------------------------------------------
+.snakemake/
+.snakemake-conda-shared/
+
+# ---- Results and logs -------------------------------------------------------
+# Fully regenerable from config + input data.
+results/
+logs/
+
+# ---- Input data -------------------------------------------------------------
+# Sequencing reads never belong in git. Deposit them in SRA/ENA and reference
+# the accessions instead.
+rnaseq_data/
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+
+# ---- Reference databases ----------------------------------------------------
+# Large, and subject to each provider's terms of use.
+resources/conidae_dbs/
+resources/containers/
+*.dmnd
+*.phr
+*.pin
+*.psq
+*.pdb
+*.pot
+*.ptf
+*.pto
+*.pos
+*.pog
+*.pjs
+
+# ---- Licensed third-party software ------------------------------------------
+# SignalP 6.0 is NOT redistributable (DTU academic licence); ConoSorter is
+# GPLv3 and should be fetched from SourceForge rather than vendored here.
+resources/software/
+*.tar.gz
+*.zip
+
+# ---- The user's own sample sheet --------------------------------------------
+# config/samples.example.tsv IS tracked; the real one is machine-specific.
+config/samples.tsv
+
+# ---- Python / editors / OS --------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

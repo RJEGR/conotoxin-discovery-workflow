@@ -1,0 +1,43 @@
+# =============================================================================
+# profiles/local  -  workstation / laptop profile (macOS or Linux desktop)
+# =============================================================================
+#   snakemake --profile profiles/local all
+#
+# Everything runs on the local machine. Containers go through Docker (detected
+# automatically by container_run.sh), conda envs are created on first use.
+# =============================================================================
+
+# Total cores the scheduler may hand out. Rules asking for more are scaled down.
+cores: 8
+
+# Ceiling for the `mem_mb` resource, in MB. Set this to your usable RAM, NOT
+# the machine total: exceeding it makes the OS swap and an assembly that would
+# have finished slowly instead thrashes for hours.
+resources:
+  - mem_mb=24000
+
+software-deployment-method:
+  - conda
+
+# Reuse solved envs across runs and across sibling checkouts. Without this,
+# every fresh clone re-solves ~8 environments.
+conda-prefix: ../.snakemake-conda-shared
+
+# Keep going after a failed job so one bad sample does not abort the batch.
+# The manifests and the final gate report which groups fell over.
+keep-going: true
+
+# Re-run a rule only when its inputs change on disk. Snakemake >= 9 also
+# fingerprints params and code by default, which makes an unrelated config
+# comment re-trigger hours of assembly.
+rerun-triggers:
+  - mtime
+  - input
+
+printshellcmds: true
+show-failed-logs: true
+
+# Give the filesystem a moment to expose outputs written by containers; on
+# macOS with Docker's virtiofs, a file can appear a beat after the process
+# exits and Snakemake would otherwise call it missing.
+latency-wait: 30

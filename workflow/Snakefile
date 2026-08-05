@@ -1,0 +1,301 @@
+# =============================================================================
+# Snakefile  -  ConotoxinDiscovery pipeline (real RNA-seq, SE/PE)
+# Engine: Snakemake >= 9.0
+# =============================================================================
+# Three stages, one sample sheet:
+#
+#   00_preprocessing   fastp (optional)                        [Bloque B]
+#   01_assembly        Trinity + rnaSPAdes + RNA-Bloom          [Bloque C]
+#                      + TransRate contig filtering (PE only)
+#   02_annotation      ORF prediction -> ... -> confidence tiers [Bloque D]
+#
+# This file stays thin: it validates config, resolves the sample sheet, wires
+# the per-stage modules and defines the aggregate targets. Per-stage logic
+# lives in workflow/rules/*.smk.
+#
+# INDEPENDENCE. This pipeline is a sibling of the simulation benchmark in
+# ../../workflow/. It shares no config, no results tree and no rule names.
+# Running it never triggers benchmark rules.
+#
+# INVOCATION
+#   snakemake --profile profiles/local  --directory <run_dir> all   # macOS
+#   snakemake --profile profiles/slurm  --directory <run_dir> all   # HPC
+# =============================================================================
+
+import csv
+import os
+import re
+from pathlib import Path
+
+from snakemake.utils import min_version
+
+min_version("9.0")
+
+configfile: "config/config.yaml"
+
+
+# ---- Top-level handles ------------------------------------------------------
+RUN_ID      = config["run_id"]
+SAMPLES_TSV = config["samples"]
+
+CFG_CONTAINERS = config["containers"]
+CFG_PREP       = config["preprocessing"]
+CFG_ASM        = config["assembly"]
+CFG_ANN        = config["annotation"]
+CFG_RES        = config["resources"]
+
+RESULTS = f"results/{RUN_ID}"
+D_PREP   = f"{RESULTS}/00_preprocessing"
+D_ASM    = f"{RESULTS}/01_assembly"
+D_ANN    = f"{RESULTS}/02_annotation"
+D_QC     = f"{RESULTS}/qc"
+
+# Validated sheet produced by `validate_samples`; every downstream helper
+# reads THIS file, never the user's raw sheet.
+SAMPLES_VALIDATED = f"{D_QC}/samples_validated.tsv"
+GROUPS_VALIDATED  = f"{D_QC}/groups_validated.tsv"
+
+
+# ---- Container helper -------------------------------------------------------
+CONTAINER_RUN = "workflow/scripts/container_run.sh"
+
+
+def container_cmd(image_key: str) -> str:
+    """Return the `container_run.sh` prefix for a configured image.
+
+    `image_key` is a dotted path into config, e.g.
+    "assembly.assemblers.trinity.container".
+    """
+    node = config
+    for part in image_key.split("."):
+        node = node[part]
+    image = node
+    return (
+        f'bash {CONTAINER_RUN} '
+        f'"{CFG_CONTAINERS["runtime"]}" '
+        f'"{image}" '
+        f'"{CFG_CONTAINERS.get("docker_platform", "")}" '
+        f'"{CFG_CONTAINERS.get("cache_dir", "resources/containers")}" '
+        f'"{",".join(CFG_CONTAINERS.get("extra_binds", []))}" --'
+    )
+
+
+def to_container_path(path: str) -> str:
+    """Map a workdir-relative host path to its /work-rooted counterpart.
+
+    container_run.sh always binds $PWD -> /work, so a path that Snakemake
+    hands us (always relative to the workdir) becomes /work/<path>.
+    """
+    return f"/work/{path}"
+
+
+# ---- Sample sheet access ----------------------------------------------------
+# The sheet is read at DAG-build time. On the very first invocation the
+# validated copy does not exist yet, so we fall back to parsing the raw sheet
+# with the same minimal contract. The `validate_samples` rule still runs and
+# still hard-fails on a bad sheet before any real work starts.
+def _read_sheet(path: str):
+    rows = []
+    p = Path(path)
+    if not p.exists():
+        return rows
+    with p.open(encoding="utf-8-sig", newline="") as fh:
+        for r in csv.DictReader(fh, delimiter="\t"):
+            sid = (r.get("sample_id") or "").strip()
+            f1 = (r.get("fastq_1") or "").strip()
+            f2 = (r.get("fastq_2") or "").strip()
+            if not sid or not f1:
+                continue
+            # A blank/absent `group` means the library is its own assembly
+            # unit, which reproduces one-assembly-per-library behaviour.
+            grp = (r.get("group") or "").strip() or sid
+            rows.append({
+                "sample_id": sid,
+                "group": grp,
+                "fastq_1": f1,
+                "fastq_2": f2,
+                "layout": "PE" if f2 else "SE",
+            })
+    return rows
+
+
+def all_samples():
+    """Validated sheet when available, raw sheet otherwise."""
+    rows = _read_sheet(SAMPLES_VALIDATED)
+    if rows:
+        return rows
+    return _read_sheet(SAMPLES_TSV)
+
+
+def sample_ids():
+    return [r["sample_id"] for r in all_samples()]
+
+
+def sample_record(sample_id: str):
+    for r in all_samples():
+        if r["sample_id"] == sample_id:
+            return r
+    raise KeyError(
+        f"sample_id '{sample_id}' not found in {SAMPLES_VALIDATED} "
+        f"or {SAMPLES_TSV}"
+    )
+
+
+def is_paired(sample_id: str) -> bool:
+    return sample_record(sample_id)["layout"] == "PE"
+
+
+# ---- Groups: the assembly unit ---------------------------------------------
+# Stage 00 (fastp) is per LIBRARY -- adapters and quality vary between lanes
+# and runs, so each library is cleaned with its own detection and keeps its own
+# QC report. Stages 01 and 02 are per GROUP: the group's cleaned reads are
+# concatenated and assembled once.
+#
+# Assembling replicates separately fragments transcripts that the pooled depth
+# recovers intact. That matters disproportionately for conotoxins: precursors
+# are short and expression is highly uneven, so a single replicate often yields
+# a partial ORF that then fails the signal-peptide test in Stage 02 and is lost
+# from the annotation entirely.
+def group_ids():
+    """Assembly units, in stable (sorted) order."""
+    return sorted({r["group"] for r in all_samples()})
+
+
+def libraries_in_group(group: str):
+    """Sample records belonging to a group, ordered by sample_id so that read
+    concatenation is deterministic (assemblers are sensitive to input order)."""
+    return sorted((r for r in all_samples() if r["group"] == group),
+                  key=lambda r: r["sample_id"])
+
+
+def group_layout(group: str) -> str:
+    """SE or PE. The validator guarantees a group is uniform, so the first
+    member is authoritative."""
+    members = libraries_in_group(group)
+    if not members:
+        raise KeyError(f"group '{group}' has no libraries")
+    return members[0]["layout"]
+
+
+def group_is_paired(group: str) -> bool:
+    return group_layout(group) == "PE"
+
+
+def reads_for_group(group: str):
+    """Reads the assemblers consume for a group.
+
+    Always the concatenated files produced by Stage 00, even for a group of
+    one library. Using a uniform path keeps Stage 01 free of any single-vs-
+    pooled branching, at the cost of one extra symlink/copy for singletons.
+    """
+    out = {"r1": f"{D_PREP}/_groups/{group}/{group}_R1.fastq.gz"}
+    if group_is_paired(group):
+        out["r2"] = f"{D_PREP}/_groups/{group}/{group}_R2.fastq.gz"
+    return out
+
+
+# Restrict wildcards so a stray directory name can never be mistaken for a
+# sample or group, and so `/` never leaks into a wildcard value.
+wildcard_constraints:
+    sample=r"[A-Za-z0-9._-]+",
+    group=r"[A-Za-z0-9._-]+",
+    asm=r"trinity|rnaspades|rnabloom",
+
+
+def enabled_assemblers():
+    return [k for k, v in CFG_ASM["assemblers"].items()
+            if v.get("enabled", False)]
+
+
+# ---- Read resolution --------------------------------------------------------
+# The single place that knows whether the per-library reads are fastp output or
+# the raw FASTQs. The group concatenation rule calls this, so flipping
+# `preprocessing.fastp` re-points the whole DAG from one config key.
+def reads_for(sample_id: str):
+    """Per-LIBRARY reads. Returns {'r1': ...} or {'r1': ..., 'r2': ...}."""
+    rec = sample_record(sample_id)
+    if CFG_PREP.get("fastp", True):
+        out = {"r1": f"{D_PREP}/{sample_id}/{sample_id}_clean_R1.fastq.gz"}
+        if rec["layout"] == "PE":
+            out["r2"] = f"{D_PREP}/{sample_id}/{sample_id}_clean_R2.fastq.gz"
+        return out
+    out = {"r1": rec["fastq_1"]}
+    if rec["layout"] == "PE":
+        out["r2"] = rec["fastq_2"]
+    return out
+
+
+# ---- Rule modules -----------------------------------------------------------
+include: "rules/00_preprocessing.smk"
+include: "rules/01_assembly.smk"
+include: "rules/02_annotation.smk"
+
+
+# ============================================================================
+# Sample sheet validation (always first)
+# ----------------------------------------------------------------------------
+# Split into a checker + a gate, the pattern used throughout this project: the
+# checker always exits 0 and writes a report; the gate reads the report and
+# halts the DAG. That keeps the diagnostic on disk instead of letting
+# Snakemake delete it as a failed job's output.
+# ============================================================================
+rule validate_samples:
+    input:
+        sheet = SAMPLES_TSV,
+    output:
+        tsv    = SAMPLES_VALIDATED,
+        groups = GROUPS_VALIDATED,
+        report = f"{D_QC}/samples_validation_report.txt",
+    conda:
+        "envs/python_base.yaml"
+    log:
+        "logs/00_validate_samples.log"
+    shell:
+        # `python` (not `python3`): inside a conda env `python` is guaranteed
+        # to be the env's interpreter, whereas `python3` can resolve to a
+        # system Python that cannot see the env's site-packages.
+        r"""
+        python workflow/scripts/00_validate_samples.py \
+            --samples    "{input.sheet}" \
+            --out-tsv    "{output.tsv}" \
+            --out-groups "{output.groups}" \
+            --out-report "{output.report}" \
+            > {log} 2>&1
+        """
+
+
+# ---- Aggregate targets ------------------------------------------------------
+# Each rules/*.smk module defines its own `stageNN_targets()`. Modules that
+# have not landed yet return an empty list, so `rule all` is always buildable
+# and grows as the pipeline is implemented block by block.
+rule all:
+    input:
+        SAMPLES_VALIDATED,
+        *stage00_targets(),
+        *stage01_targets(),
+        *stage02_targets(),
+
+
+# ---- Per-stage convenience aliases -----------------------------------------
+rule validate:
+    input:
+        SAMPLES_VALIDATED,
+        GROUPS_VALIDATED,
+        f"{D_QC}/samples_validation_report.txt",
+
+rule preprocessing:
+    input:
+        *stage00_targets(),
+
+rule assembly:
+    input:
+        *stage01_targets(),
+
+rule annotation:
+    input:
+        *stage02_targets(),
+
+
+# Rules that must never be offloaded to a cluster executor: they are trivial
+# aggregators or gates whose cost is dominated by scheduler latency.
+localrules: all, validate, preprocessing, assembly, annotation, validate_samples

@@ -1,0 +1,23 @@
+# Host-side helper environment for the containerised rules (Trinity, TransRate).
+#
+# The heavy tool itself lives in the container; this env only provides what the
+# WRAPPER needs on the host:
+#   * python  -> path arithmetic in lib_container_paths.sh and CSV parsing of
+#                TransRate's assemblies.csv
+#   * seqkit  -> read-pair sanitisation before TransRate (seqkit sana / pair)
+#   * pigz    -> fast decompression of gzipped FASTQs, which TransRate 1.0.3
+#                cannot read directly
+#
+# Deliberately does NOT pin docker/apptainer: those are host-level installs
+# (Docker Desktop on macOS, a module or system package on HPC) and cannot be
+# provided by conda. container_run.sh probes for them at runtime and fails
+# with an actionable message if neither is present.
+name: conotoxin-pipeline-container-host
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - seqkit>=2.8
+  - pigz
+  - coreutils

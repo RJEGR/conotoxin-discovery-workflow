@@ -1,0 +1,123 @@
+# =============================================================================
+# profiles/slurm  -  HPC profile (SLURM + Apptainer/Singularity)
+# =============================================================================
+#   snakemake --profile profiles/slurm all
+#
+# Requires the SLURM executor plugin:
+#   pip install snakemake-executor-plugin-slurm
+#
+# WHAT CHANGES VERSUS profiles/local
+#   * Each job becomes an sbatch submission with its own cpus/mem/time.
+#   * Containers run under Apptainer instead of Docker. Nothing in the
+#     workflow changes: container_run.sh probes for a runtime and translates
+#     the flags (-v -> --bind, --pwd instead of -w, and it drops --platform,
+#     which is meaningless on a native x86_64 node).
+#   * Trinity becomes practical again. On Apple Silicon it runs emulated and
+#     takes many hours; here it runs native.
+#
+# BEFORE FIRST USE, edit the three site-specific things below:
+#   1. `slurm_partition` in default-resources and in any per-rule override.
+#   2. `slurm_account` if your site requires one (delete the line if not).
+#   3. `containers.extra_binds` in config/config.yaml, if the FASTQs live
+#      outside the working directory — the classic case being reads on
+#      /scratch while you launch from /home. Apptainer will not see them
+#      otherwise, and the failure surfaces as a confusing "file not found"
+#      from inside the assembler.
+# =============================================================================
+
+executor: slurm
+
+jobs: 32                 # max concurrent SLURM jobs
+max-jobs-per-second: 5
+max-status-checks-per-second: 5
+
+# ---- Defaults applied to every rule -----------------------------------------
+# `runtime` is in MINUTES. Per-rule overrides follow below; anything not listed
+# inherits these.
+default-resources:
+  - slurm_partition="general"
+  # - slurm_account="your_account"
+  - mem_mb=8000
+  - runtime=120
+  - tmpdir="/tmp"
+
+# ---- Per-rule resources -----------------------------------------------------
+# Sized from observed behaviour on a 9.3 M-pair paired-end library. Scale
+# `runtime` roughly linearly with library size.
+set-threads:
+  fastp: 8
+  concat_group_reads: 2
+  assemble_trinity: 16
+  assemble_rnaspades: 16
+  assemble_rnabloom: 8
+  transrate_filter: 8
+  predict_orfs: 8
+  dedup_merge_pep: 8
+  conosorter_run: 4
+  signalp_and_prepare: 4
+  diamond_annotate: 8
+  parse_besthits: 1
+
+set-resources:
+  # --- Stage 00 -------------------------------------------------------------
+  - fastp:mem_mb=16000
+  - fastp:runtime=120
+  # Concatenation is pure I/O: many cores would not help, but a big group of
+  # deep libraries takes a while to stream through.
+  - concat_group_reads:mem_mb=4000
+  - concat_group_reads:runtime=120
+
+  # --- Stage 01 -------------------------------------------------------------
+  # Trinity is the tall pole: memory-hungry and long. Keep `mem_mb` at or above
+  # the `max_memory_gb` set in config.yaml, with headroom for the JVM and the
+  # Perl driver, or SLURM will OOM-kill a run that Trinity itself thought was
+  # within budget.
+  - assemble_trinity:mem_mb=64000
+  - assemble_trinity:runtime=1440
+  - assemble_rnaspades:mem_mb=64000
+  - assemble_rnaspades:runtime=720
+  - assemble_rnabloom:mem_mb=32000
+  - assemble_rnabloom:runtime=480
+  # TransRate decompresses both mates to plain FASTQ (~350 bytes/record), so
+  # give it real scratch. Point tmpdir at node-local disk if your site has it.
+  - transrate_filter:mem_mb=16000
+  - transrate_filter:runtime=360
+
+  # --- Stage 02 -------------------------------------------------------------
+  - predict_orfs:mem_mb=32000
+  - predict_orfs:runtime=360
+  - dedup_merge_pep:mem_mb=32000
+  - dedup_merge_pep:runtime=240
+  - conosorter_run:mem_mb=8000
+  - conosorter_run:runtime=180
+  # SignalP 6 loads a ~1.5 GB transformer; the fast mode still wants room for
+  # the batch tensors.
+  - signalp_and_prepare:mem_mb=24000
+  - signalp_and_prepare:runtime=360
+  - diamond_annotate:mem_mb=16000
+  - diamond_annotate:runtime=180
+
+# ---- Software deployment ----------------------------------------------------
+software-deployment-method:
+  - conda
+
+# Put this on shared storage the compute nodes can read, and keep it OFF
+# $HOME on sites with small home quotas — the envs total several GB.
+conda-prefix: /path/to/shared/conda-envs
+
+keep-going: true
+
+rerun-triggers:
+  - mtime
+  - input
+
+# Shared filesystems report metadata lazily; a job can finish before its output
+# is visible to the scheduler node. 60 s is a safe default for Lustre/GPFS.
+latency-wait: 60
+
+# Retry once: most HPC failures are transient (a node evicted, a mount
+# hiccup). A genuine error fails the same way twice and still surfaces.
+retries: 1
+
+printshellcmds: true
+show-failed-logs: true

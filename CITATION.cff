@@ -1,0 +1,45 @@
+# Citation File Format — https://citation-file-format.github.io/
+# Supports FAIR principle F (Findable) and R (Reusable): GitHub renders a
+# "Cite this repository" button from this file, and Zenodo reads it when
+# minting a DOI.
+cff-version: 1.2.0
+title: Bioinformatic workflow for conotoxin discovery and annotation
+message: >-
+  If you use this workflow, please cite it using the metadata below, and also
+  cite the individual tools it orchestrates (see the Citing section of the
+  README).
+type: software
+authors:
+  - given-names: Ricardo
+    family-names: Gómez-Reyes
+    email: rgomez41@uabc.edu.mx
+    affiliation: Universidad Autónoma de Baja California (UABC)
+    # orcid: 'https://orcid.org/0000-0000-0000-0000'   # add yours
+repository-code: 'https://github.com/rjegr/conotoxin-discovery-workflow'
+abstract: >-
+  A reproducible, portable Snakemake workflow that discovers and annotates
+  conotoxin precursors from single- or paired-end venom-duct RNA-seq. It
+  performs read quality control with fastp, replicate-aware de novo assembly
+  with Trinity, rnaSPAdes and RNA-Bloom, reference-free contig filtering with
+  TransRate, ORF prediction with TransDecoder, cross-assembler dereplication
+  with MMseqs2, conotoxin precursor recognition with ConoSorter, secretion
+  signal screening with SignalP 6, and homology annotation against the
+  ConoServer, NCBI and UniProt Conidae protein databases. Candidates are
+  assigned to four confidence tiers based on the level of agreement among four
+  independent evidence sources. The workflow runs unchanged on macOS with
+  Docker and on Linux HPC under SLURM with Apptainer.
+keywords:
+  - conotoxin
+  - conopeptide
+  - Conus
+  - venom
+  - transcriptomics
+  - RNA-seq
+  - de novo assembly
+  - functional annotation
+  - Snakemake
+  - reproducible research
+  - FAIR
+license: MIT
+version: 1.0.0
+date-released: '2026-08-05'

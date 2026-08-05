@@ -1,0 +1,30 @@
+# Conda environment for the Stage 02 tool chain that runs natively.
+#
+# Covers three of the four external tools:
+#   * TransDecoder 5.7.1  -> ORF prediction (R2)
+#   * DIAMOND 2.1.13      -> the support blastp in R2 and the annotation
+#                            blastp in R6
+#   * MMseqs2 15          -> cross-assembler peptide dereplication (R3)
+#
+# The fourth, ConoSorter, needs gawk + HMMER and lives in conosorter.yaml
+# because its dependency set is disjoint from these. SignalP is separate again
+# (torch), in signalp.yaml.
+#
+# Bundling TransDecoder, DIAMOND and MMseqs2 together is deliberate: they run
+# back-to-back on the same data, and one env means one solve instead of three.
+# All three have native osx-arm64 and linux-64 Bioconda builds, so no container
+# is involved anywhere in this env.
+name: conotoxin-pipeline-annotation
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - transdecoder=5.7.1
+  - diamond=2.1.13
+  - mmseqs2=15
+  - perl
+  - python=3.11
+  - pandas>=2.0
+  - openpyxl>=3.1
+  - seqkit>=2.8
+  - coreutils

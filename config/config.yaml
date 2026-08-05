@@ -1,0 +1,268 @@
+# =============================================================================
+# config.yaml  -  ConotoxinDiscovery pipeline (real RNA-seq)
+# =============================================================================
+# End-to-end workflow for conotoxin discovery from real single- or paired-end
+# RNA-seq libraries:
+#
+#   00_preprocessing  fastp (optional)
+#   01_assembly       Trinity + rnaSPAdes + RNA-Bloom, then TransRate filtering
+#   02_annotation     the 10-rule annotation chain (ORF prediction -> tiers)
+#
+# This pipeline is INDEPENDENT of the simulation benchmark that lives in
+# ../workflow/. It vendors the benchmark's annotation logic but has its own
+# config, rules, envs and results tree. Editing this file never affects the
+# benchmark.
+#
+# PORTABILITY. Designed to run unchanged on macOS (Docker Desktop) and on
+# Linux HPC under SLURM (Apptainer/Singularity). Select the environment with
+# a profile, not by editing this file:
+#     snakemake --profile profiles/local   ...    # macOS
+#     snakemake --profile profiles/slurm   ...    # HPC
+# =============================================================================
+
+# ---- Input -----------------------------------------------------------------
+# TSV with a header and three columns:
+#     sample_id   fastq_1   fastq_2
+# `fastq_2` empty (or the column absent) marks a single-end library.
+# All FASTQ paths must be ABSOLUTE. `sample_id` must be unique and contain
+# only [A-Za-z0-9._-]; it becomes a directory name and a Snakemake wildcard.
+samples: "config/samples.tsv"
+
+# Free-form label for this run; becomes the top level of the results tree so
+# several parameterisations can coexist (results/{run_id}/00_preprocessing/...).
+run_id: "run01"
+
+
+# ---- Container runtime -----------------------------------------------------
+# Trinity, TransRate and (optionally) SignalP run inside containers.
+#
+# `runtime: auto` probes, in order: docker (daemon reachable) -> apptainer ->
+# singularity, and uses the first that works. That single setting lets the
+# same checkout run on a laptop with Docker Desktop and on an HPC node where
+# only Apptainer exists. Override to pin one explicitly.
+containers:
+  runtime: "auto"                 # auto | docker | apptainer | singularity
+  # Passed to `docker run --platform`. Needed on Apple Silicon for images that
+  # only publish linux/amd64. IGNORED by apptainer/singularity and ignored on
+  # native linux/amd64 hosts.
+  docker_platform: "linux/amd64"
+  # Directory for Apptainer/Singularity .sif caches. Relative to the workdir.
+  # On HPC point this at fast shared scratch, not $HOME.
+  cache_dir: "resources/containers"
+  # Extra bind mounts (host:container). The workdir is always bound to /work.
+  # Add the filesystem holding your FASTQs if it is not under the workdir --
+  # a very common HPC case where reads live on /scratch but you run from /home.
+  extra_binds: []
+
+
+# ---- Stage 00: preprocessing (fastp) ---------------------------------------
+# https://github.com/OpenGene/fastp
+preprocessing:
+  # Master switch. `false` skips fastp entirely and Stage 01 consumes the raw
+  # FASTQs directly (the stage still emits a manifest recording that choice).
+  fastp: true
+
+  # fastp knobs. Defaults follow fastp's own recommendations for RNA-seq;
+  # adapters are auto-detected (PE) unless you set adapter_sequence.
+  qualified_quality_phred: 15     # -q : a base is "qualified" at >= this
+  unqualified_percent_limit: 40   # -u : % unqualified bases allowed per read
+  n_base_limit: 5                 # -n : max Ns per read
+  length_required: 36             # -l : discard reads shorter than this
+  cut_front: true                 # --cut_front  (5' sliding-window trim)
+  cut_tail: true                  # --cut_tail   (3' sliding-window trim)
+  cut_window_size: 4
+  cut_mean_quality: 20
+  detect_adapter_for_pe: true     # --detect_adapter_for_pe
+  adapter_sequence: ""            # optional explicit R1 adapter
+  adapter_sequence_r2: ""         # optional explicit R2 adapter
+  dedup: false                    # --dedup (fastp >= 0.23); costs RAM
+  extra: ""                       # any additional raw fastp flags
+  threads: 4
+
+
+# ---- Stage 01: assembly ----------------------------------------------------
+assembly:
+  assemblers:
+    trinity:
+      enabled: false
+      # Modern official image (2.15.x). The simulation benchmark pins the much
+      # older biocontainers 2.6.6 for historical reasons; for real, deep
+      # libraries the newer release assembles better and supports --single
+      # cleanly. Consequence: assemblies from this pipeline are NOT
+      # byte-comparable with the benchmark's -- do not mix them in one table.
+      container: "trinityrnaseq/trinityrnaseq:latest"
+      max_memory_gb: 6
+      threads: 8
+      # Trinity normalises reads by default. On deep venom-duct libraries this
+      # is usually desirable; set to true to disable it.
+      no_normalize_reads: false
+    rnaspades:
+      enabled: true
+      max_memory_gb: 32
+      threads: 8
+    rnabloom:
+      enabled: true
+      max_memory_gb: 16
+      threads: 8
+
+  # ---- TransRate -----------------------------------------------------------
+  # Reference-free contig filtering. TransRate's read-metrics mode is the only
+  # mode available here (there is no reference transcriptome for real data),
+  # and it REQUIRES paired-end reads (--left + --right).
+  #
+  # SINGLE-END LIMITATION (decision 2026-07-30). For SE libraries TransRate is
+  # skipped and `filtered_contigs.fasta` is the raw assembly. The stage
+  # manifest records `filter_method` per sample (`transrate` | `none`) so any
+  # downstream comparison can stratify on it. SE and PE contig sets are NOT
+  # directly comparable.
+  transrate:
+    enabled: true
+    container: "arnaudmeng/transrate:1.0.3"
+    threads: 4
+    # Read-pair sanitisation before TransRate. OFF by default here: Stage 00
+    # runs fastp with --in1/--in2, which emits synchronised mates by
+    # construction, so there is nothing to repair. (The simulation benchmark
+    # enables it because ART occasionally writes out-of-sync mates.) Turn it on
+    # only if TransRate's SNAP step reports unmatched read IDs — it costs one
+    # extra full-size copy of each mate on disk.
+    sanitize_reads: false
+
+    # ---- DISK REQUIREMENT (read this before running on real libraries) -----
+    # TransRate 1.0.3 predates transparent gzip input, so both mates must be
+    # written out uncompressed for the duration of the run: roughly 350 bytes
+    # per record, i.e. ~7 GB for a 9 M-pair library, released as soon as the
+    # rule finishes.
+    #
+    # The rule performs a preflight check and, if the volume cannot hold the
+    # decompressed reads, SKIPS filtering rather than dying: it copies the raw
+    # assembly to filtered_contigs.fasta and records
+    # `filter_method = none` plus `insufficient_disk_for_transrate` in the
+    # manifest. The run therefore completes, but those contigs are unfiltered
+    # and not comparable with filtered ones.
+
+  invariants:
+    min_contigs_per_assembly: 1   # an assembly below this fails the gate
+
+
+# ---- Stage 02: annotation --------------------------------------------------
+# Mirrors the benchmark's Stage 7, with the parameters appropriate to real
+# data. See ../docs/stage7_annotation.md for the full rationale of each knob.
+annotation:
+
+  # Reference databases. Same snapshot layout as the benchmark; point `root`
+  # wherever you keep it (an absolute path is fine on HPC).
+  databases:
+    snapshot_version: "20260701"
+    # Relative to the REPOSITORY ROOT, so a fresh clone resolves it without
+    # editing. `resources/` is gitignored — create it locally, either by
+    # copying the snapshot in or by symlinking a shared copy:
+    #     ln -s /shared/path/to/resources resources
+    # An absolute path also works and is the usual choice on HPC, where the
+    # databases live on shared storage.
+    root: "resources/conidae_dbs/20260701"
+    conoserver:
+      fasta: "conoserver/conoserver_240620_protein.fa"
+      dmnd:  "conoserver/conoserver.dmnd"
+      header_field: 6
+      header_sep: "|"
+    ncbi:
+      fasta: "NCBI/proteinas/NCBI_Conidae_proteins_26_6_26.fasta"
+      dmnd:  "NCBI/proteinas/NCBI_Conidae_proteins_26_6_26.dmnd"
+      feature_table: "base_datos_anotacion_ncbi.txt"
+    uniprot:
+      fasta: "UniProt/Uniprot_Conidae_proteins_26_6_26.fasta"
+      dmnd:  "UniProt/Uniprot_Conidae_proteins_26_6_26.dmnd"
+      labels_xlsx: "base_datos_anotacion_uniprot.xlsx"
+      labels_sheet: "Sheet0"
+      labels_entry_col: "Entry"
+      labels_name_col: "Protein names"
+
+  # ConoSorter v1.1 (Lavergne 2013, SourceForge, GPLv3). No git repo exists;
+  # pinned by ZIP sha256.
+  conosorter:
+    version: "1.1"
+    download_url: "https://sourceforge.net/projects/conosorter/files/latest/download"
+    local_zip: "resources/software/conosorter/ConoSorter_v1.1.zip"
+    expected_sha256_zip: "573633ebe557a5c44ccb2475a32c1eaa40c79837bd975d1b7f9f6fbaaec0571d"
+
+  # SignalP 6.0 -- two sources, tried in this order:
+  #   1. DTU academic tarball at `tarball_glob` -> pip install (preferred:
+  #      you control the exact version and it runs in-process).
+  #   2. Container `container` -> used automatically if no tarball is present.
+  # Whichever path is taken is recorded in the stage audit for provenance.
+  signalp6:
+    tarball_glob: "resources/software/signalp6/signalp-6*.tar.gz"
+    container: "sravankrishna47/signalp-fast"
+    organism: "eukarya"                   # eukarya | other | euk
+    mode: "fast"                          # fast | slow | slow-sequential
+    format: "txt"                         # SP 6.0 renamed 5.0b's "short" to "txt"
+
+  # ---- R2: ORF prediction --------------------------------------------------
+  predict:
+    min_orf_length: 50
+    single_best_only: false
+    # TRUE in the simulation benchmark, FALSE here. Real libraries assemble
+    # 10^3-10^5 contigs, which is far more than the PWM needs to train, so
+    # start-codon refinement both works and is worth having: the ORF
+    # N-terminus IS the signal peptide that R5 feeds to SignalP, and
+    # precursors are short (~60-150 aa) so a few misplaced codons shift a
+    # large fraction of the molecule. See ../docs/stage7_annotation.md §5.3b.
+    #
+    # If a sparse library still trips the PWM ("pwm length = 0"), rerun that
+    # sample with this set to true -- but then set it for the WHOLE dataset,
+    # never per-sample, or ORF sets stop being comparable.
+    no_refine_starts: false
+    support_evalue: 1.0e-5
+    support_max_target_seqs: 1
+    threads: 8
+
+  # ---- R3: dereplication ---------------------------------------------------
+  # MMseqs2 easy-cluster over the concatenated per-assembler peptides.
+  # Thresholds mirror the legacy CD-HIT-2D settings.
+  dedup:
+    min_seq_id: 0.95
+    coverage: 0.90
+    cov_mode: 1
+    sensitivity: 7.5
+    threads: 8
+
+  # ---- R6: DIAMOND annotation ---------------------------------------------
+  diamond_annotate:
+    evalue: 1.0e-3
+    min_qcov: 30
+    max_hsps: 1
+    threads: 8
+    max_target_seqs:
+      uniprot: 2
+      ncbi: 2
+      conoserver: 3
+
+  besthits:
+    min_qcov: 30.0
+    cov_delta: 20.0
+    bitscore_ratio: 0.80
+
+  # ---- R10: invariants gate ------------------------------------------------
+  invariants:
+    require_manifest_min_rows: 1
+    require_nonempty_nr_pep: true
+    # Real libraries can legitimately yield zero SP-positive candidates (a
+    # non-venom tissue, a failed library). Left OFF so one such sample does
+    # not fail the whole run; it is reported as a note in the manifest.
+    require_nonempty_signalp: false
+    max_conflicting_labels_pct: 25.0
+
+
+# ---- Resource defaults -----------------------------------------------------
+# Per-rule overrides live in the profiles; these are the fallbacks.
+resources:
+  py_threads: 1
+  py_mem_mb: 4096
+  fastp_mem_mb: 8192
+  assembly_mem_mb: 32768
+  transrate_mem_mb: 8192
+  predict_mem_mb: 16384
+  dedup_mem_mb: 16384
+  conosorter_mem_mb: 4096
+  signalp_mem_mb: 12288
+  diamond_mem_mb: 8192

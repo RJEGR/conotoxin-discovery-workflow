@@ -1,0 +1,28 @@
+# Conda environment for ConoSorter v1.1 (Lavergne et al. 2013).
+#
+# ConoSorter is a bash + gawk program (not Perl, despite what its age might
+# suggest). The `ConoSorter` entry point drives the gawk scripts `transl`,
+# `regex_p`, `regex_d`, `pHMM` and `layout`, and calls `hmmscan` against the
+# HMM libraries bundled in the ZIP.
+#
+# gawk is MANDATORY. macOS ships BSD awk, which lacks the GNU extensions those
+# scripts rely on; without gawk they fail in confusing ways rather than
+# cleanly.
+#
+# HMMER 3.4 reads the 3.1-era databases in the ZIP without conversion.
+#
+# The ConoSorter source itself is not a conda package: the wrapper unzips the
+# SourceForge archive on first use and patches its hardcoded
+# `#! /usr/local/bin/gawk` shebangs, which would otherwise resolve to nothing
+# inside a conda env.
+name: conotoxin-pipeline-conosorter
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bash>=5
+  - gawk>=5.1
+  - hmmer=3.4
+  - unzip
+  - seqkit>=2.8
+  - coreutils

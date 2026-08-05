@@ -1,0 +1,20 @@
+# Conda environment for RNA-Bloom (BirolLab).
+#
+# RNA-Bloom is a Java application using Bloom filters, so Bioconda ships a
+# noarch build that works identically on osx-arm64, osx-64, linux-64 and
+# linux-aarch64 — the only assembler in this pipeline that needs neither a
+# container nor emulation.
+#
+# Memory is bounded by `-mem` (GB) from the config, which maps onto the JVM
+# heap; RNA-Bloom is by far the lightest of the three assemblers.
+name: conotoxin-pipeline-rnabloom
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - rnabloom>=2.0
+  - openjdk>=17
+  - python=3.11
+  - seqkit>=2.8
+  - pigz
+  - coreutils

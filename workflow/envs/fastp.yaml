@@ -1,0 +1,29 @@
+# Conda environment for Stage 00 read preprocessing.
+#
+# fastp is an all-in-one FASTQ preprocessor (adapter trimming, quality
+# filtering, per-read cutting, deduplication, HTML/JSON QC reports) written in
+# C++ with multithreading. https://github.com/OpenGene/fastp
+#
+# Version floor: 0.23 is required because the pipeline exposes `--dedup`,
+# which was introduced in that release. Bioconda ships native builds for both
+# osx-arm64 and linux-64, so no container is needed for this stage — a welcome
+# exception given how container-heavy Stage 01 is.
+#
+# seqkit is included for the read-count statistics recorded in the stage
+# manifest: fastp's own JSON already carries before/after counts, but seqkit
+# is used to verify the emitted files independently, which catches truncated
+# writes that a crashed fastp can leave behind.
+name: conotoxin-pipeline-fastp
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - fastp>=0.23
+  - seqkit>=2.8
+  - pigz
+  - coreutils
+  # Required by 01_run_fastp.sh, which parses fastp's JSON report to build the
+  # per-sample summary. Deliberately python (stdlib `json`) rather than jq:
+  # python is already pinned across every other env in this pipeline, so this
+  # adds nothing new to the dependency surface.
+  - python=3.11

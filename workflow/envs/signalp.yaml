@@ -1,0 +1,29 @@
+# Conda environment for SignalP 6 (Stage 02 R5).
+#
+# Deliberately minimal: python + pip + openpyxl, nothing else. SignalP itself
+# arrives by one of two routes decided at runtime by 14_signalp_and_prepare.py:
+#
+#   1. pip-installed from a DTU academic tarball placed under
+#      resources/software/signalp6/ — the preferred route, because it pins an
+#      exact release.
+#   2. executed from a container when no tarball is present — so the pipeline
+#      is runnable by someone who has not cleared the DTU licence.
+#
+# torch is NOT pinned here. SignalP's own requirements.txt asks for
+# `torch>1.7.0,<2`, and pip resolves it during install. Declaring a newer torch
+# in this env would create an unsatisfiable conflict; the install step also
+# force-holds numpy below 2.0, because torch 1.x was built against the numpy
+# 1.x ABI and aborts at inference otherwise.
+#
+# openpyxl is required by the script itself, which writes the reorganised and
+# split workbooks.
+name: conotoxin-pipeline-signalp
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - openpyxl>=3.1
+  - numpy<2
+  - unzip
+  - coreutils

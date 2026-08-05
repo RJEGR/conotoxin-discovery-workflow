@@ -1,0 +1,20 @@
+# Minimal Python environment for the pipeline's glue scripts:
+#   * 00_validate_samples.py   (sample sheet validation)
+#   * manifest builders and QC gates in every stage
+#
+# Kept deliberately small so it solves in seconds — it is the first env
+# Snakemake has to create, and a slow solve here delays every run.
+#
+# openpyxl is required by the Stage 02 annotation scripts, which read and
+# write .xlsx workbooks; it is included here so the same env can serve the
+# lighter annotation glue without a second solve.
+name: conotoxin-pipeline-python-base
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pandas>=2.0
+  - openpyxl>=3.1
+  - numpy>=1.24
+  - pyyaml>=6.0
+  - coreutils

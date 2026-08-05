@@ -1,0 +1,7 @@
+sample_id	group	fastq_1	fastq_2
+L_part1	Cmarmoreus_VD	/absolute/path/to/reads/L_part1_R1.fastq.gz	/absolute/path/to/reads/L_part1_R2.fastq.gz
+L_part2	Cmarmoreus_VD	/absolute/path/to/reads/L_part2_R1.fastq.gz	/absolute/path/to/reads/L_part2_R2.fastq.gz
+L_part3	Cmarmoreus_VD	/absolute/path/to/reads/L_part3_R1.fastq.gz	/absolute/path/to/reads/L_part3_R2.fastq.gz
+Cpurpurascens_rep1	Cpurpurascens_VD	/absolute/path/to/reads/Cpurp_rep1_R1.fastq.gz	/absolute/path/to/reads/Cpurp_rep1_R2.fastq.gz
+Cpurpurascens_rep2	Cpurpurascens_VD	/absolute/path/to/reads/Cpurp_rep2_R1.fastq.gz	/absolute/path/to/reads/Cpurp_rep2_R2.fastq.gz
+Cconsors_SE1		/absolute/path/to/reads/Cconsors_SE1.fastq.gz
